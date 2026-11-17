@@ -1,53 +1,88 @@
+
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.request import Request, urlopen
 
 API_URL = "https://fantasy.premierleague.com/api/bootstrap-static/"
-DATA_FILE = Path("data/prices.json")
+OUTPUT = Path("data/prices.json")
 
 
 def main():
-    request = Request(API_URL, headers={"User-Agent": "FPLPriceTracker/1.0"})
+    request = Request(
+        API_URL,
+        headers={"User-Agent": "FPLPredictionTracker/1.0"}
+    )
 
     with urlopen(request, timeout=30) as response:
         data = json.load(response)
 
-    players = {
-        str(p["id"]): {
-            "name": p["web_name"],
-            "team": p["team"],
-            "price": p["now_cost"] / 10
+    players = data.get("elements", [])
+    if not players:
+        raise RuntimeError("Aucun joueur reçu depuis l'API FPL.")
+
+    # Vérification de la présence des prévisions officielles.
+    prediction_fields = [
+        "price_change_percent",
+        "price_change_projections"
+    ]
+
+    available = [
+        field for field in prediction_fields
+        if any(field in player for player in players)
+    ]
+
+    if not available:
+        sample_keys = sorted(players[0].keys())
+        raise RuntimeError(
+            "Les champs de prédiction sont absents de "
+            "la réponse officielle FPL. "
+            "Champs disponibles : " + ", ".join(sample_keys)
+        )
+
+    results = []
+
+    for player in players:
+        prediction = {
+            field: player.get(field)
+            for field in available
         }
-        for p in data["elements"]
-    }
 
-    previous = {}
-    if DATA_FILE.exists():
-        previous = json.loads(DATA_FILE.read_text(encoding="utf-8")).get("players", {})
+        if all(value is None for value in prediction.values()):
+            continue
 
-    changes = []
-    for player_id, player in players.items():
-        old = previous.get(player_id)
-        if old and old["price"] != player["price"]:
-            changes.append({
-                "player": player["name"],
-                "old": old["price"],
-                "new": player["price"],
-                "difference": round(player["price"] - old["price"], 1)
-            })
+        results.append({
+            "id": player["id"],
+            "name": player["web_name"],
+            "team_id": player["team"],
+            "current_price": player["now_cost"] / 10,
+            "predictions": prediction
+        })
 
-    result = {
+    if not results:
+        raise RuntimeError(
+            "Les champs existent, mais aucune prédiction "
+            "exploitable n'a été reçue."
+        )
+
+    output = {
         "updated_at": datetime.now(timezone.utc).isoformat(),
-        "players": players,
-        "changes_since_previous_run": changes
+        "source": "Official Fantasy Premier League API",
+        "prediction_fields": available,
+        "players_with_predictions": len(results),
+        "players": results
     }
 
-    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    DATA_FILE.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    OUTPUT.write_text(
+        json.dumps(output, indent=2, ensure_ascii=False),
+        encoding="utf-8"
+    )
 
-    print(f"{len(players)} joueurs récupérés.")
-    print(f"{len(changes)} changements de prix détectés.")
+    print("Source : FPL officielle")
+    print("Champs trouvés :", ", ".join(available))
+    print("Joueurs avec données :", len(results))
+    print("Prédictions enregistrées :", OUTPUT)
 
 
 if __name__ == "__main__":
