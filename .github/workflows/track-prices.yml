@@ -1,3 +1,4 @@
+
 name: FPL Price Tracker
 
 on:
@@ -16,24 +17,72 @@ jobs:
   update-prices:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Fetch FPL prices
+      - name: Check existing prediction data
+        id: check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from datetime import datetime, timezone
+
+          should_run = True
+          path = Path("data/prices.json")
+          now = datetime.now(timezone.utc)
+
+          if os.environ["EVENT_NAME"] == "schedule" and path.exists():
+              try:
+                  data = json.loads(path.read_text(encoding="utf-8"))
+                  updated = datetime.fromisoformat(
+                      data["updated_at"].replace("Z", "+00:00")
+                  ).astimezone(timezone.utc)
+
+                  valid = (
+                      data.get("players_with_predictions", 0) > 0
+                      and bool(data.get("top_expected_rises"))
+                      and bool(data.get("top_expected_falls"))
+                  )
+
+                  if (
+                      valid
+                      and updated.date() == now.date()
+                      and (updated.hour, updated.minute) >= (18, 40)
+                  ):
+                      should_run = False
+              except (ValueError, KeyError, TypeError):
+                  pass
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"should_run={str(should_run).lower()}\n")
+
+          print("Run tracker:", should_run)
+          PY
+
+      - name: Fetch FPL predictions
+        if: steps.check.outputs.should_run == 'true'
         run: python tracker.py
 
-      - name: Save price data
+      - name: Save prediction data
+        if: steps.check.outputs.should_run == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data/prices.json
           if ! git diff --cached --quiet; then
-            git commit -m "Update official FPL prices"
+            git commit -m "Update FPL predictions"
             git push
           fi
