@@ -2,7 +2,7 @@ name: FPL Price Tracker
 
 on:
   schedule:
-    - cron: '46 18 * * *'
+    - cron: '46,50,55 18 * * *'
   workflow_dispatch:
 
 permissions:
